@@ -1,0 +1,170 @@
+name: 构建并发布 GHCR 镜像
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "release/v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  metadata:
+    if: >-
+      github.repository == 'fgy4399/OmniRoute'
+      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    name: 生成镜像标签
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - name: 使用实际构建提交的前 8 位
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "image=ghcr.io/fgy4399/omniroute:${GITHUB_SHA:0:8}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: metadata
+    if: github.repository == 'fgy4399/OmniRoute'
+    name: 构建 ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.metadata.outputs.image }}-${{ matrix.arch }}
+      PLATFORM: linux/${{ matrix.arch }}
+    steps:
+      - name: 检出本次提交
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 检查构建资源
+        shell: bash
+        run: |
+          set -euo pipefail
+          free -h
+          df -h /
+          # 公开仓库的标准 Linux 运行器提供 16 GiB；7 GiB 运行器不适用。
+          memory_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+          if [ "$memory_kb" -lt 14000000 ]; then
+            echo "::error::构建至少需要 14 GB 内存，请使用更大的运行器。"
+            exit 1
+          fi
+          docker info
+
+      - name: 配置 Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 构建本地待验证镜像
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: Dockerfile
+          target: runner-base
+          platforms: ${{ env.PLATFORM }}
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          # 保留已验证的 webpack、内存上限和构建工作进程配置。
+          build-args: |
+            OMNIROUTE_USE_TURBOPACK=0
+            OMNIROUTE_BUILD_MEMORY_MB=6144
+            OMNIROUTE_BUILD_WORKERS=2
+          cache-from: type=gha,scope=ghcr-${{ matrix.arch }}
+          cache-to: type=gha,scope=ghcr-${{ matrix.arch }},mode=max,ignore-error=true
+
+      - name: 验证容器启动及健康状态
+        id: smoke
+        timeout-minutes: 6
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name omniroute-smoke \
+            --health-interval=5s --health-start-period=120s --health-retries=12 \
+            "$IMAGE"
+          for attempt in $(seq 1 60); do
+            state=$(docker inspect --format '{{.State.Status}}' omniroute-smoke)
+            health=$(docker inspect --format '{{.State.Health.Status}}' omniroute-smoke)
+            if [ "$state" != "running" ] || [ "$health" = "unhealthy" ]; then
+              echo "::error::容器未通过启动检查：state=$state health=$health"
+              exit 1
+            fi
+            if [ "$health" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::等待容器健康状态超时。"
+          exit 1
+
+      - name: 清理测试容器
+        if: always() && steps.smoke.outcome != 'skipped'
+        run: docker rm -f omniroute-smoke
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 发布已验证镜像
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE"
+          docker buildx imagetools inspect "$IMAGE"
+          # 仅发布 SHA 标签，不覆盖 latest，也不需要迁移现有运行数据。
+          printf '### GHCR 镜像\n\n`docker pull %s`\n\n平台：`%s`\n' "$IMAGE" "$PLATFORM" >> "$GITHUB_STEP_SUMMARY"
+
+  merge:
+    name: 发布多架构清单
+    needs: [metadata, build]
+    if: github.repository == 'fgy4399/OmniRoute'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.metadata.outputs.image }}
+    steps:
+      - name: 配置 Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 合并并验证架构清单
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 两个平台均通过原生健康检查后，才发布可自动选择架构的统一标签。
+          docker buildx imagetools create --tag "$IMAGE" "$IMAGE-amd64" "$IMAGE-arm64"
+          docker buildx imagetools inspect --raw "$IMAGE" | \
+            jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]'
+          printf '### 多架构 GHCR 镜像\n\n`docker pull %s`\n\n支持：`linux/amd64`、`linux/arm64`\n' "$IMAGE" >> "$GITHUB_STEP_SUMMARY"
