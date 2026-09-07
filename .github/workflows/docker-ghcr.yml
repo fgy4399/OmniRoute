@@ -18,13 +18,23 @@ concurrency:
 jobs:
   build:
     if: github.repository == 'fgy4399/OmniRoute'
-    runs-on: ubuntu-24.04
+    name: 构建 ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     timeout-minutes: 90
     permissions:
       contents: read
       packages: write
     env:
-      IMAGE: ghcr.io/fgy4399/omniroute:sha-${{ github.sha }}
+      IMAGE: ghcr.io/fgy4399/omniroute:sha-${{ github.sha }}-${{ matrix.arch }}
+      PLATFORM: linux/${{ matrix.arch }}
     steps:
       - name: 检出本次提交
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,7 +64,7 @@ jobs:
           context: .
           file: Dockerfile
           target: runner-base
-          platforms: linux/amd64
+          platforms: ${{ env.PLATFORM }}
           load: true
           push: false
           tags: ${{ env.IMAGE }}
@@ -66,8 +76,8 @@ jobs:
             OMNIROUTE_USE_TURBOPACK=0
             OMNIROUTE_BUILD_MEMORY_MB=6144
             OMNIROUTE_BUILD_WORKERS=2
-          cache-from: type=gha,scope=ghcr-amd64
-          cache-to: type=gha,scope=ghcr-amd64,mode=max,ignore-error=true
+          cache-from: type=gha,scope=ghcr-${{ matrix.arch }}
+          cache-to: type=gha,scope=ghcr-${{ matrix.arch }},mode=max,ignore-error=true
 
       - name: 验证容器启动及健康状态
         id: smoke
@@ -111,4 +121,36 @@ jobs:
           docker push "$IMAGE"
           docker buildx imagetools inspect "$IMAGE"
           # 仅发布 SHA 标签，不覆盖 latest，也不需要迁移现有运行数据。
-          printf '### GHCR 镜像\n\n`docker pull %s`\n\n平台：`linux/amd64`\n' "$IMAGE" >> "$GITHUB_STEP_SUMMARY"
+          printf '### GHCR 镜像\n\n`docker pull %s`\n\n平台：`%s`\n' "$IMAGE" "$PLATFORM" >> "$GITHUB_STEP_SUMMARY"
+
+  merge:
+    name: 发布多架构清单
+    needs: build
+    if: github.repository == 'fgy4399/OmniRoute'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/fgy4399/omniroute:sha-${{ github.sha }}
+    steps:
+      - name: 配置 Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 合并并验证架构清单
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 两个平台均通过原生健康检查后，才发布可自动选择架构的统一标签。
+          docker buildx imagetools create --tag "$IMAGE" "$IMAGE-amd64" "$IMAGE-arm64"
+          docker buildx imagetools inspect --raw "$IMAGE" | \
+            jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]'
+          printf '### 多架构 GHCR 镜像\n\n`docker pull %s`\n\n支持：`linux/amd64`、`linux/arm64`\n' "$IMAGE" >> "$GITHUB_STEP_SUMMARY"

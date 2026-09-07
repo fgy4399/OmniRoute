@@ -23,7 +23,7 @@ test("只允许目标 fork 的手动或专用分支工作流发布", () => {
 });
 
 test("只使用 GHCR 和提交 SHA 标签，不依赖 Docker Hub 凭证", () => {
-  assert.equal(job.env.IMAGE, "ghcr.io/fgy4399/omniroute:sha-${{ github.sha }}");
+  assert.equal(job.env.IMAGE, "ghcr.io/fgy4399/omniroute:sha-${{ github.sha }}-${{ matrix.arch }}");
   assert.equal(login.with.registry, "ghcr.io");
   assert.equal(login.with.password, "${{ secrets.GITHUB_TOKEN }}");
   assert.equal(steps.filter((step) => step.uses?.startsWith("docker/login-action@")).length, 1);
@@ -35,12 +35,33 @@ test("只使用 GHCR 和提交 SHA 标签，不依赖 Docker Hub 凭证", () => 
 test("复用 Node 基础镜像及受限构建内存配置", () => {
   assert.equal(build.with.file, "Dockerfile");
   assert.equal(build.with.target, "runner-base");
-  assert.equal(build.with.platforms, "linux/amd64");
+  assert.equal(build.with.platforms, "${{ env.PLATFORM }}");
+  assert.equal(job.env.PLATFORM, "linux/${{ matrix.arch }}");
   assert.match(build.with["build-args"], /^OMNIROUTE_USE_TURBOPACK=0$/m);
   assert.match(build.with["build-args"], /^OMNIROUTE_BUILD_WORKERS=2$/m);
   assert.match(build.with["build-args"], /^OMNIROUTE_BUILD_MEMORY_MB=6144$/m);
   assert.match(build.with["cache-to"], /ignore-error=true/);
-  assert.equal(job["runs-on"], "ubuntu-24.04");
+  assert.equal(job["runs-on"], "${{ matrix.runner }}");
+  assert.deepEqual(job.strategy.matrix.include, [
+    { arch: "amd64", runner: "ubuntu-24.04" },
+    { arch: "arm64", runner: "ubuntu-24.04-arm" },
+  ]);
+  assert.equal(job.strategy["fail-fast"], false);
+  assert.equal(build.with["cache-from"], "type=gha,scope=ghcr-${{ matrix.arch }}");
+});
+
+test("全部架构成功后才合并，并验证远端包含 AMD64 与 ARM64", () => {
+  const merge = workflow.jobs.merge;
+  assert.equal(merge.needs, "build");
+  assert.equal(merge.if, "github.repository == 'fgy4399/OmniRoute'");
+  assert.equal(merge.env.IMAGE, "ghcr.io/fgy4399/omniroute:sha-${{ github.sha }}");
+  assert.deepEqual(merge.permissions, { contents: "read", packages: "write" });
+  const publish = merge.steps.find((step) => step.run?.includes("imagetools create"));
+  assert.match(publish.run, /--tag "\$IMAGE" "\$IMAGE-amd64" "\$IMAGE-arm64"/);
+  assert.match(publish.run, /imagetools inspect --raw/);
+  assert.match(publish.run, /jq -e/);
+  assert.match(publish.run, /sort == \["amd64", "arm64"\]/);
+  assert.equal(publish["continue-on-error"], undefined);
 });
 
 test("镜像通过健康检查后才发布，失败时仍清理容器", () => {
