@@ -130,10 +130,31 @@ jobs:
 
       - name: 发布已验证镜像
         shell: bash
+        timeout-minutes: 10
         run: |
           set -euo pipefail
-          docker push "$IMAGE"
-          docker buildx imagetools inspect "$IMAGE"
+          # GHCR may reject the final manifest with "unknown blob" even after
+          # uploading every layer. Retry the same tested SHA tag, without rebuilding.
+          retry_registry() {
+            local attempt=1 delay=5 status
+            while true; do
+              if "$@"; then
+                return 0
+              else
+                status=$?
+              fi
+              if [ "$attempt" -ge 4 ]; then
+                echo "::error::GHCR 操作在 4 次尝试后仍失败：$*"
+                return "$status"
+              fi
+              echo "::warning::GHCR 操作失败（第 $attempt/4 次），${delay}s 后重试：$*"
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+          retry_registry docker push "$IMAGE"
+          retry_registry docker buildx imagetools inspect "$IMAGE"
           # 仅发布 SHA 标签，不覆盖 latest，也不需要迁移现有运行数据。
           printf '### GHCR 镜像\n\n`docker pull %s`\n\n平台：`%s`\n' "$IMAGE" "$PLATFORM" >> "$GITHUB_STEP_SUMMARY"
 

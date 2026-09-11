@@ -1,0 +1,1 @@
+- **fix(ci):** retry GHCR image uploads and remote inspection up to four times with bounded backoff after container health checks. This allows transient registry failures such as `unknown blob` at manifest publication to recover without rebuilding the tested image; persistent failures retain a nonzero exit code and block the multi-architecture manifest.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -112,4 +112,116 @@ test("镜像通过健康检查后才发布，失败时仍清理容器", () => {
   const cleanup = steps.find((step) => step.run === "docker rm -f omniroute-smoke");
   assert.equal(cleanup.if, "always() && steps.smoke.outcome != 'skipped'");
   assert.match(publish.run, /docker buildx imagetools inspect/);
+});
+
+function runPublish(pushFailures, inspectFailures) {
+  const publish = steps.find((step) => step.run?.includes('docker push "$IMAGE"'));
+  assert.equal(publish["timeout-minutes"], 10);
+  const directory = mkdtempSync(join(tmpdir(), "omniroute-ghcr-publish-"));
+  const trace = join(directory, "trace");
+  const summary = join(directory, "summary");
+  writeFileSync(trace, "");
+  try {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `
+        push_calls=0
+        inspect_calls=0
+        docker() {
+          printf 'docker %s\\n' "$*" >> "$TRACE_FILE"
+          if [ "$1" = "push" ]; then
+            push_calls=$((push_calls + 1))
+            if [ "$push_calls" -le "$PUSH_FAILURES" ]; then
+              echo "unknown blob" >&2
+              return 42
+            fi
+          elif [ "$1 $2 $3" = "buildx imagetools inspect" ]; then
+            inspect_calls=$((inspect_calls + 1))
+            if [ "$inspect_calls" -le "$INSPECT_FAILURES" ]; then
+              echo "manifest unknown" >&2
+              return 43
+            fi
+          else
+            return 99
+          fi
+          return 0
+        }
+        sleep() { printf 'sleep %s\\n' "$1" >> "$TRACE_FILE"; }
+        ${publish.run}
+        `,
+      ],
+      {
+        env: {
+          ...process.env,
+          IMAGE: "ghcr.io/fgy4399/omniroute:e3f18035-amd64",
+          PLATFORM: "linux/amd64",
+          TRACE_FILE: trace,
+          GITHUB_STEP_SUMMARY: summary,
+          PUSH_FAILURES: String(pushFailures),
+          INSPECT_FAILURES: String(inspectFailures),
+        },
+        encoding: "utf8",
+        timeout: 5000,
+      }
+    );
+    assert.ifError(result.error);
+    const commands = readFileSync(trace, "utf8").trim().split("\n");
+    return {
+      status: result.status,
+      pushes: commands.filter((line) => line.startsWith("docker push ")).length,
+      inspections: commands.filter((line) => line.startsWith("docker buildx ")).length,
+      delays: commands.filter((line) => line.startsWith("sleep ")),
+      summary: existsSync(summary) ? readFileSync(summary, "utf8") : "",
+      output: result.stdout + result.stderr,
+    };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("发布首次成功时不重试", () => {
+  const result = runPublish(0, 0);
+  assert.equal(result.status, 0, result.output);
+  assert.equal(result.pushes, 1);
+  assert.equal(result.inspections, 1);
+  assert.deepEqual(result.delays, []);
+  assert.match(result.summary, /docker pull ghcr.io\/fgy4399\/omniroute:e3f18035-amd64/);
+});
+
+test("unknown blob 后重推同一个已验证镜像", () => {
+  const result = runPublish(2, 0);
+  assert.equal(result.status, 0, result.output);
+  assert.equal(result.pushes, 3);
+  assert.equal(result.inspections, 1);
+  assert.deepEqual(result.delays, ["sleep 5", "sleep 10"]);
+  assert.match(result.output, /unknown blob/);
+});
+
+test("远端校验暂时失败只重试校验", () => {
+  const result = runPublish(0, 1);
+  assert.equal(result.status, 0, result.output);
+  assert.equal(result.pushes, 1);
+  assert.equal(result.inspections, 2);
+  assert.deepEqual(result.delays, ["sleep 5"]);
+});
+
+test("推送持续失败保留退出码，禁止写成功摘要", () => {
+  const result = runPublish(99, 0);
+  assert.equal(result.status, 42);
+  assert.equal(result.pushes, 4);
+  assert.equal(result.inspections, 0);
+  assert.deepEqual(result.delays, ["sleep 5", "sleep 10", "sleep 20"]);
+  assert.equal(result.summary, "");
+  assert.match(result.output, /::error::/);
+});
+
+test("校验持续失败同样阻止发布成功摘要", () => {
+  const result = runPublish(0, 99);
+  assert.equal(result.status, 43);
+  assert.equal(result.pushes, 1);
+  assert.equal(result.inspections, 4);
+  assert.deepEqual(result.delays, ["sleep 5", "sleep 10", "sleep 20"]);
+  assert.equal(result.summary, "");
 });
