@@ -114,11 +114,14 @@ export const command_codeProvider: RegistryEntry = {
     // The public Command Code catalog lists this id with a 1M context.
     // Efforts and the output cap follow this gateway's existing V4 entries;
     // discovery does not advertise model-specific effort or vision metadata.
+    // Vision follows models.dev V4.1 Flash metadata across multiple providers
+    // (text/image input, attachment: true), not a Command Code image-call test.
     {
       id: "deepseek/deepseek-v4.1-flash",
       name: "DeepSeek V4.1 Flash (CC)",
       supportsReasoning: true,
       supportedThinkingEfforts: COMMAND_CODE_REASONING_EFFORTS,
+      supportsVision: true,
       contextLength: 1000000,
       maxOutputTokens: 131072,
     },

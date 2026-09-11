@@ -7,8 +7,8 @@
  * a flat `reasoning_effort` (see COMMAND_CODE_PASSTHROUGH_FIELDS in
  * open-sse/executors/commandCode.ts), which is why the registry declares the
  * provider's tier vocabulary on the base id instead of relying on suffixed wire
- * ids. These tests pin the row, the sibling parity, the text-only classification
- * and the catalog exposure.
+ * ids. These tests pin the row, the sibling effort parity, native vision
+ * classification, and catalog exposure.
  */
 
 import test from "node:test";
@@ -62,14 +62,14 @@ test("command-code registers DeepSeek V4.1 Flash under its vendor-prefixed wire 
   assert.equal(row.maxOutputTokens, 131072);
 });
 
-test("the new row declares no vision flag, like its DeepSeek siblings", () => {
+test("V4.1 Flash declares vision without changing older DeepSeek metadata", () => {
   const row = cmdModel(MODEL_ID);
-  assert.equal(row.supportsVision, undefined);
+  assert.equal(row.supportsVision, true);
   for (const sibling of ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"]) {
     assert.equal(
       cmdModel(sibling)?.supportsVision,
       undefined,
-      `${sibling} stays text-only (control)`
+      `${sibling} keeps its existing vision metadata (control)`
     );
   }
 });
@@ -84,11 +84,16 @@ test("the DeepSeek trio on command-code shares one tier vocabulary", () => {
 
 // ─── Capability resolution ─────────────────────────────────────────────────
 
-test("DeepSeek V4.1 Flash resolves as a text-only command-code model", () => {
-  const caps = getResolvedModelCapabilities(`command-code/${MODEL_ID}`);
-  assert.equal(caps.provider, "command-code");
-  assert.notEqual(caps.supportsVision, true, "must not claim vision");
-});
+for (const provider of ["command-code", "cmd"]) {
+  test(`DeepSeek V4.1 Flash and its effort variants resolve native vision via ${provider}`, () => {
+    for (const suffix of ["", ...EXPECTED_EFFORTS.map((effort) => `-${effort}`)]) {
+      const model = `${provider}/${MODEL_ID}${suffix}`;
+      const caps = getResolvedModelCapabilities(model);
+      assert.equal(caps.provider, "command-code", model);
+      assert.equal(caps.supportsVision, true, `${model} must retain native vision`);
+    }
+  });
+}
 
 // ─── Catalog exposure ──────────────────────────────────────────────────────
 
