@@ -165,11 +165,25 @@ const CC_VISION_MODEL_PATTERNS: readonly RegExp[] = [
 
 function isCommandCodeVisionModel(model?: string | null): boolean {
   if (!model) return false;
-  if (/(?:^|\/)mimo-v2\.5-pro$/i.test(model)) return false;
-  if (/(?:^|\/)mimo-v2\.5$/i.test(model)) return true;
-  if (/(?:^|\/)mimo-v2-omni$/i.test(model)) return true;
-  if (CC_VISION_MODEL_PATTERNS.some((pattern) => pattern.test(model))) return true;
-  return isVisionModelId(model);
+  const wireModel = normalizeCommandCodeWireModel(model);
+  if (/(?:^|\/)mimo-v2\.5-pro$/i.test(wireModel)) return false;
+  if (/(?:^|\/)mimo-v2\.5$/i.test(wireModel)) return true;
+  if (/(?:^|\/)mimo-v2-omni$/i.test(wireModel)) return true;
+
+  // Keep CLI fallback aligned with the registry used by the Vision Bridge.
+  // Only declared effort aliases inherit metadata from their base model.
+  const models = REGISTRY["command-code"].models;
+  const entry =
+    models.find((candidate) => candidate.id === wireModel) ??
+    models.find((candidate) =>
+      candidate.supportedThinkingEfforts?.some(
+        (effort) => wireModel === `${candidate.id}-${effort}`
+      )
+    );
+  if (typeof entry?.supportsVision === "boolean") return entry.supportsVision;
+
+  if (CC_VISION_MODEL_PATTERNS.some((pattern) => pattern.test(wireModel))) return true;
+  return isVisionModelId(wireModel);
 }
 
 function extractImageUrl(part: JsonRecord): string | undefined {

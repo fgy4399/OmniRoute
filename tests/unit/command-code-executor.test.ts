@@ -378,6 +378,172 @@ test("Command Code stream preserves the upstream OpenAI usage chunk (passthrough
   assert.ok(text.includes("data: [DONE]"));
 });
 
+// A synthetic one-pixel PNG: no filesystem paths or private image data.
+const V41_MODEL = "deepseek/deepseek-v4.1-flash";
+const VISION_IMAGE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const VISION_TEXT = "Describe the attached pixel.";
+const VISION_CONTENT = [
+  { type: "text", text: VISION_TEXT },
+  { type: "image_url", image_url: { url: VISION_IMAGE } },
+];
+const CLI_VISION_CONTENT = [
+  { type: "text", text: VISION_TEXT },
+  { type: "image", image: VISION_IMAGE },
+];
+
+async function executeVisionRequest(
+  model: string,
+  initialStatus: number,
+  body: Record<string, unknown> = {
+    model,
+    messages: [{ role: "user", content: VISION_CONTENT }],
+  },
+  stream = false
+) {
+  const calls: FetchCall[] = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init, body: JSON.parse(String(init.body)) });
+    if (calls.length === 1) {
+      return new Response(JSON.stringify({}), { status: initialStatus });
+    }
+    return new Response(
+      openAiSse({ type: "text-delta", text: "Pixel received" }) +
+        openAiSse({ type: "finish", finishReason: "stop" }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } }
+    );
+  };
+
+  const result = await new CommandCodeExecutor().execute({
+    model,
+    stream,
+    credentials: { apiKey: "cc_test_key" },
+    body,
+  });
+  assert.equal(result.response.status, 200);
+  assert.equal(calls.length, initialStatus === 200 ? 1 : 2);
+  assert.equal(calls[0].url, CHAT_URL);
+  const primaryBody = calls[0].body!;
+  assert.deepEqual(primaryBody.messages, [{ role: "user", content: VISION_CONTENT }]);
+  if (initialStatus !== 200) {
+    assert.equal(calls[1].url, "https://api.commandcode.ai/alpha/generate");
+    assert.equal(result.url, calls[1].url);
+    if (stream) {
+      const text = await result.response.text();
+      assert.ok(text.includes("Pixel received"));
+      assert.ok(text.includes("data: [DONE]"));
+    } else {
+      const json = await result.response.json();
+      assert.equal(json.choices[0].message.content, "Pixel received");
+    }
+    assert.deepEqual(result.transformedBody, calls[1].body);
+  }
+  return {
+    primaryBody,
+    cliParams: calls[1]?.body?.params as Record<string, unknown> | undefined,
+  };
+}
+
+for (const prefix of ["", "cmd/", "command-code/"]) {
+  for (const initialStatus of [200, 403, 404]) {
+    test(`Command Code V4.1 vision preserves image and text via ${prefix || "wire id"} after ${initialStatus}`, async () => {
+      const { primaryBody, cliParams } = await executeVisionRequest(
+        `${prefix}${V41_MODEL}`,
+        initialStatus
+      );
+      assert.equal(primaryBody.model, V41_MODEL);
+      if (initialStatus !== 200) {
+        assert.equal(cliParams?.model, V41_MODEL);
+        assert.deepEqual(cliParams?.messages, [{ role: "user", content: CLI_VISION_CONTENT }]);
+      }
+    });
+  }
+}
+
+for (const status of [403, 404]) {
+  test(`Command Code V4.1 streaming fallback retains image after ${status}`, async () => {
+    const { cliParams } = await executeVisionRequest(V41_MODEL, status, undefined, true);
+    assert.deepEqual(cliParams?.messages, [{ role: "user", content: CLI_VISION_CONTENT }]);
+  });
+}
+
+for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+  test(`Command Code V4.1 vision survives CLI fallback with ${effort} effort`, async () => {
+    // src/sse/services/model.ts resolves registry effort aliases before dispatch;
+    // chatCore passes the base id plus reasoning_effort to the executor.
+    const { cliParams } = await executeVisionRequest(V41_MODEL, 403, {
+      model: V41_MODEL,
+      reasoning_effort: effort,
+      messages: [{ role: "user", content: VISION_CONTENT }],
+    });
+    assert.equal(cliParams?.model, V41_MODEL);
+    assert.equal(cliParams?.reasoning_effort, effort === "xhigh" ? "max" : effort);
+    assert.deepEqual(cliParams?.messages, [{ role: "user", content: CLI_VISION_CONTENT }]);
+
+    // Direct executor callers can still supply an unstripped, declared alias.
+    const direct = await executeVisionRequest(`cmd/${V41_MODEL}-${effort}`, 404);
+    assert.deepEqual(direct.cliParams?.messages, [{ role: "user", content: CLI_VISION_CONTENT }]);
+  });
+}
+
+test("Command Code V4.1 preserves Responses input_image through translation and CLI fallback", async () => {
+  const { openaiResponsesToOpenAIRequest } =
+    await import("../../open-sse/translator/request/openai-responses.ts");
+  const model = `command-code/${V41_MODEL}`;
+  const body = openaiResponsesToOpenAIRequest(
+    model,
+    {
+      model,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: VISION_TEXT },
+            { type: "input_image", image_url: VISION_IMAGE },
+          ],
+        },
+      ],
+    },
+    false,
+    {}
+  ) as Record<string, unknown>;
+  const { cliParams } = await executeVisionRequest(model, 403, body);
+  assert.deepEqual(cliParams?.messages, [{ role: "user", content: CLI_VISION_CONTENT }]);
+});
+
+for (const [model, supportsVision] of [
+  ["deepseek/deepseek-v4-pro", false],
+  ["deepseek/deepseek-v4-flash", false],
+  [`${V41_MODEL}-minimal`, false],
+  ["cmd/mimo-v2.5-pro", false],
+  ["command-code/mimo-v2.5", true],
+  ["xiaomi/mimo-v2-omni", true],
+  ["moonshotai/Kimi-K2.6", true],
+  ["Qwen/Qwen3.9-custom", true],
+  ["gpt-4o", true],
+] as const) {
+  test(`Command Code CLI fallback preserves existing vision classification for ${model}`, async () => {
+    const { cliParams } = await executeVisionRequest(model, 403);
+    assert.deepEqual(cliParams?.messages, [
+      { role: "user", content: supportsVision ? CLI_VISION_CONTENT : VISION_TEXT },
+    ]);
+  });
+}
+
+test("Command Code CLI vision honors explicit registry false ahead of heuristics", async () => {
+  const row = REGISTRY["command-code"].models.find((model) => model.id === "gpt-5.4")!;
+  const original = row.supportsVision;
+  try {
+    row.supportsVision = false;
+    for (const model of ["cmd/gpt-5.4", "command-code/gpt-5.4-high"]) {
+      const { cliParams } = await executeVisionRequest(model, 403);
+      assert.deepEqual(cliParams?.messages, [{ role: "user", content: VISION_TEXT }]);
+    }
+  } finally {
+    row.supportsVision = original;
+  }
+});
+
 test("Command Code executor falls back to /alpha/generate on 403 (e.g. Go plan without Provider API access) for streaming", async () => {
   const calls: Array<{
     url: string;
