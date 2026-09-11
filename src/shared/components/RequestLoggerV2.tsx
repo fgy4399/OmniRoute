@@ -127,6 +127,7 @@ const RequestLoggerV2 = forwardRef<RequestLoggerV2Handle, { initialSelectedId?: 
         { key: "cacheSource", label: t("columns.cacheSource") },
         { key: "model", label: t("columns.model") },
         { key: "requestedModel", label: t("columns.requested") },
+        { key: "reasoningEffort", label: t("columns.reasoningEffort") },
         { key: "provider", label: t("columns.provider") },
         { key: "protocol", label: t("columns.protocol") },
         { key: "account", label: t("columns.account") },
@@ -1241,6 +1242,11 @@ const RequestLoggerV2 = forwardRef<RequestLoggerV2Handle, { initialSelectedId?: 
                     {visibleColumns.requestedModel && (
                       <th className={LOG_TABLE_HEADER_CELL_CLASS}>{t("columns.requested")}</th>
                     )}
+                    {visibleColumns.reasoningEffort && (
+                      <th className={LOG_TABLE_HEADER_CELL_CLASS}>
+                        {t("columns.reasoningEffort")}
+                      </th>
+                    )}
                     {visibleColumns.provider && (
                       <th className={LOG_TABLE_HEADER_CELL_CLASS}>{t("columns.provider")}</th>
                     )}
@@ -1484,6 +1490,18 @@ const RequestLoggerV2 = forwardRef<RequestLoggerV2Handle, { initialSelectedId?: 
                                 }
                               >
                                 {log.requestedModel}
+                              </span>
+                            ) : (
+                              <span className="text-text-muted text-[10px]">—</span>
+                            )}
+                          </td>
+                        )}
+                        {visibleColumns.reasoningEffort && (
+                          <td className="px-3 py-2 font-mono text-[11px]">
+                            {typeof log.reasoningEffort === "string" &&
+                            log.reasoningEffort.trim() ? (
+                              <span title={log.reasoningEffort.trim()}>
+                                {log.reasoningEffort.trim().toLowerCase()}
                               </span>
                             ) : (
                               <span className="text-text-muted text-[10px]">—</span>

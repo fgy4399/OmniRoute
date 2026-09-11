@@ -17,6 +17,7 @@ export type Capture = {
 
 type RequestLoggerLike = {
   logTargetRequest: (url: unknown, headers: Record<string, string>, body: unknown) => void;
+  recordFinalProviderRequest?: (body: unknown) => void;
 };
 
 type WarnLog = {
@@ -226,6 +227,7 @@ export function createPreparedRequestLogger(
   return {
     capture(request) {
       latest = request;
+      reqLogger.recordFinalProviderRequest?.(request.body);
       reqLogger.logTargetRequest(request.url, request.headers, request.body);
       updatePendingScope(scope, {
         providerRequest: request.body,

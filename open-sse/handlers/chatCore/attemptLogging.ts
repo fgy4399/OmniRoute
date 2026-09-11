@@ -220,7 +220,13 @@ export type PersistAttemptLogsContext = {
   model: string | null | undefined;
   skillRequestId: string;
   detailedLoggingEnabled: boolean;
-  reqLogger: { getPipelinePayloads?: () => Record<string, unknown> | undefined } | null | undefined;
+  reqLogger:
+    | {
+        getPipelinePayloads?: () => Record<string, unknown> | null | undefined;
+        getFinalProviderRequestMetadata?: () => { reasoningEffort: string | null } | null;
+      }
+    | null
+    | undefined;
   pendingRequestId: unknown;
   clientRawRequest: { endpoint?: string } | null | undefined;
   requestedModel: unknown;
@@ -458,6 +464,13 @@ export function persistAttemptLogs(args: PersistAttemptLogsArgs, ctx: PersistAtt
     }
   }
 
+  // Only dispatch captures establish sent effort; speculative bodies and detailed
+  // payloads may be stale. A capture without effort clears the previous tier.
+  const reasoningEffort =
+    cacheSource === "semantic"
+      ? null
+      : (reqLogger?.getFinalProviderRequestMetadata?.()?.reasoningEffort ?? null);
+
   saveCallLog({
     id: pendingRequestId,
     method: "POST",
@@ -510,6 +523,7 @@ export function persistAttemptLogs(args: PersistAttemptLogsArgs, ctx: PersistAtt
     sessionTag: sessionTag || null,
     responseId: extractResponsesId(sourceFormat, clientResponse),
     videoContentRemoved: videoContentRemoved || false,
+    reasoningEffort,
   }).catch(() => {});
 
   // Emit the terminal request-lifecycle event to the live dashboard bus. `request.started`

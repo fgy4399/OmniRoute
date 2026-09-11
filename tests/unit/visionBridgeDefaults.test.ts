@@ -48,6 +48,10 @@ test("isVisionBridgeForcedModel forces tokenrouter deepseek models (text-only ba
   assert.strictEqual(isVisionBridgeForcedModel("tokenrouter/deepseek-v4-flash"), true);
 });
 
+test("isVisionBridgeForcedModel leaves opencode-go DeepSeek V4.1 vision available", () => {
+  assert.strictEqual(isVisionBridgeForcedModel("opencode-go/deepseek-v4.1-flash"), false);
+});
+
 test("getVisionBridgeConfig returns defaults when no settings provided", () => {
   const config = getVisionBridgeConfig({});
 

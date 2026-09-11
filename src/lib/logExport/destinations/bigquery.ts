@@ -99,6 +99,7 @@ const FIELDS: readonly LogExportConfigField[] = [
     key: "autoCreate",
     labelFallback: "Create dataset and table if missing",
     type: "boolean",
+    helpFallback: "Also adds new export columns to existing tables.",
   },
   {
     key: "partitionExpirationDays",
@@ -155,6 +156,7 @@ export const BIGQUERY_TABLE_SCHEMA = {
     { name: "error_type", type: "STRING", mode: "NULLABLE" },
     { name: "correlation_id", type: "STRING", mode: "NULLABLE" },
     { name: "session_tag", type: "STRING", mode: "NULLABLE" },
+    { name: "reasoning_effort", type: "STRING", mode: "NULLABLE" },
     { name: "model_pinned", type: "BOOL", mode: "NULLABLE" },
     { name: "detail_state", type: "STRING", mode: "NULLABLE" },
     { name: "has_request_body", type: "BOOL", mode: "NULLABLE" },
@@ -209,6 +211,7 @@ export function toBigQueryRow(record: LogExportRecord, exportedAt: string) {
     error_type: record.errorType,
     correlation_id: record.correlationId,
     session_tag: record.sessionTag,
+    reasoning_effort: record.reasoningEffort,
     model_pinned: record.modelPinned,
     detail_state: record.detailState,
     has_request_body: record.hasRequestBody,
@@ -246,6 +249,7 @@ function estimateRowBytes(record: LogExportRecord, exportedAt: string): number {
 interface BigQueryResponseBody {
   error?: { message?: string; status?: string };
   insertErrors?: Array<{ index?: number; errors?: Array<{ message?: string }> }>;
+  schema?: { fields?: Array<{ name: string; [key: string]: unknown }> };
 }
 
 interface BigQueryResponse {
@@ -329,9 +333,36 @@ class BigQueryClient implements LogExportClient {
     return { ok: false, detail: describeFailure(table.status, table.json) };
   }
 
+  /** Append the new column without replacing operator-managed fields or table layout. */
+  private async reconcileSchema(table: BigQueryResponseBody | null): Promise<void> {
+    const fields = table?.schema?.fields;
+    if (!Array.isArray(fields)) {
+      throw new Error("BigQuery table schema is unavailable; cannot safely add reasoning_effort.");
+    }
+    const additions = BIGQUERY_TABLE_SCHEMA.fields.filter(
+      (field) =>
+        field.name === "reasoning_effort" &&
+        !fields.some((existing) => existing.name.toLowerCase() === field.name)
+    );
+    if (additions.length === 0) return;
+    if (!this.config.autoCreate) {
+      throw new Error(
+        "Add nullable STRING column reasoning_effort to the BigQuery table manually; auto-create is off."
+      );
+    }
+
+    const updated = await this.request("PATCH", this.tablePath, {
+      schema: { fields: [...fields, ...additions] },
+    });
+    if (!updated.ok) throw new Error(describeFailure(updated.status, updated.json));
+  }
+
   async prepare(): Promise<void> {
     const table = await this.request("GET", this.tablePath);
-    if (table.ok) return;
+    if (table.ok) {
+      await this.reconcileSchema(table.json);
+      return;
+    }
     if (table.status !== 404) throw new Error(describeFailure(table.status, table.json));
     if (!this.config.autoCreate) {
       throw new Error(

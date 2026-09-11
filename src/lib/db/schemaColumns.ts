@@ -260,6 +260,10 @@ export function ensureCallLogsColumns(db: SqliteDatabase) {
       db.exec("ALTER TABLE call_logs ADD COLUMN session_tag TEXT DEFAULT NULL");
       console.log("[DB] Added call_logs.session_tag column");
     }
+    if (!columnNames.has("reasoning_effort")) {
+      db.exec("ALTER TABLE call_logs ADD COLUMN reasoning_effort TEXT DEFAULT NULL");
+      console.log("[DB] Added call_logs.reasoning_effort column");
+    }
 
     db.exec(
       "CREATE INDEX IF NOT EXISTS idx_call_logs_requested_model ON call_logs(requested_model)"

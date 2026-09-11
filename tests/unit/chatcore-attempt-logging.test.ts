@@ -17,6 +17,9 @@ const coreDb = await import("../../src/lib/db/core.ts");
 const { getCallLogById } = await import("../../src/lib/usage/callLogs.ts");
 const { persistAttemptLogs } = await import("../../open-sse/handlers/chatCore/attemptLogging.ts");
 const { getAuditLog } = await import("../../src/lib/compliance/index.ts");
+const { createRequestLogger } = await import("../../open-sse/utils/requestLogger.ts");
+const { createPreparedRequestLogger } =
+  await import("../../open-sse/utils/providerRequestLogging.ts");
 
 type CodexRotationEnvelope = {
   _omniroute?: {
@@ -117,12 +120,19 @@ test("uses final credentials connectionId when Codex failover rotates the accoun
   });
 });
 
-test("cacheSource 'semantic' is preserved", async () => {
+test("semantic cache hits persist NULL effort even when logger metadata has a tier", async () => {
   const id = "attempt-semantic-1";
-  persistAttemptLogs({ status: 200, cacheSource: "semantic" }, baseCtx({ pendingRequestId: id }));
+  persistAttemptLogs(
+    { status: 200, cacheSource: "semantic" },
+    baseCtx({
+      pendingRequestId: id,
+      reqLogger: { getFinalProviderRequestMetadata: () => ({ reasoningEffort: "high" }) },
+    })
+  );
   const row = await pollForCallLog(id);
   assert.ok(row);
   assert.equal(row.cacheSource, "semantic");
+  assert.equal(row.reasoningEffort, null);
 });
 
 test("connectionId falls back to credentials.connectionId when null, and error is persisted", async () => {
@@ -194,4 +204,167 @@ test("unique tool_calls do not write provider.spec_violation audit", () => {
     requestId: "skill-spec-clean-1",
   });
   assert.equal(rows.length, 0);
+});
+
+// ─── reasoning_effort (migration 176) ──────────────────────────────────────
+// The row must carry the tier the provider request actually held — i.e. what the
+// reasoning sanitizer left on the FINAL upstream body — and NULL when the
+// request carried none. This is the per-call answer to "which effort did we
+// really send?".
+
+async function createCaptureHarness(id: string, enabled = false) {
+  const reqLogger = await createRequestLogger("openai", "openai", "gpt-x", { enabled });
+  const requestCapture = createPreparedRequestLogger(reqLogger, {
+    id,
+    model: "gpt-x",
+    provider: "openai",
+    connectionId: "conn-1",
+  });
+  return {
+    reqLogger,
+    capture(body: Record<string, unknown>) {
+      return requestCapture.capture({
+        url: "https://api.example.com/v1/chat/completions",
+        headers: {},
+        body,
+        bodyString: JSON.stringify(body),
+      });
+    },
+  };
+}
+
+test("disabled detailed logging persists captured max effort instead of client xhigh", async () => {
+  const id = "attempt-reasoning-effort-1";
+  const { reqLogger, capture } = await createCaptureHarness(id);
+  const clientBody = {
+    model: "deepseek/deepseek-v4.1-flash",
+    reasoning_effort: "xhigh",
+    messages: [{ role: "user", content: "private prompt" }],
+  };
+  assert.equal(reqLogger.getFinalProviderRequestMetadata?.(), null);
+  reqLogger.logClientRawRequest("/v1/chat/completions", clientBody);
+  await capture({ ...clientBody, reasoning_effort: "max" });
+  assert.deepEqual(reqLogger.getFinalProviderRequestMetadata?.(), { reasoningEffort: "max" });
+  assert.equal(
+    reqLogger.getPipelinePayloads(),
+    null,
+    "disabled logging retains no prompt payloads"
+  );
+  persistAttemptLogs(
+    { status: 200, tokens: { input: 1, output: 2 }, providerRequest: clientBody },
+    baseCtx({ pendingRequestId: id, body: clientBody, reqLogger })
+  );
+
+  const row = await pollForCallLog(id);
+  assert.ok(row, "call log row should be persisted");
+  assert.equal(row.reasoningEffort, "max");
+});
+
+test("persists NULL reasoning effort when the captured request carried no tier", async () => {
+  const id = "attempt-reasoning-effort-none-1";
+  const { reqLogger, capture } = await createCaptureHarness(id);
+  await capture({ model: "gpt-5.5", messages: [] });
+  assert.deepEqual(reqLogger.getFinalProviderRequestMetadata?.(), { reasoningEffort: null });
+  persistAttemptLogs(
+    { status: 200, tokens: { input: 1, output: 2 } },
+    baseCtx({ pendingRequestId: id, reqLogger })
+  );
+
+  const row = await pollForCallLog(id);
+  assert.ok(row, "call log row should be persisted");
+  assert.equal(row.reasoningEffort, null);
+});
+
+test("persists captured native Claude effort when the executor body is absent", async () => {
+  const id = "attempt-reasoning-effort-captured-1";
+  const { reqLogger, capture } = await createCaptureHarness(id, true);
+  await capture({ model: "claude-opus-4-7", output_config: { effort: "high" } });
+  persistAttemptLogs(
+    { status: 200, tokens: { input: 1, output: 2 } },
+    baseCtx({ pendingRequestId: id, detailedLoggingEnabled: true, reqLogger })
+  );
+
+  const row = await pollForCallLog(id);
+  assert.ok(row, "call log row should be persisted");
+  assert.equal(row.reasoningEffort, "high");
+});
+
+test("records a captured explicit thinking off-switch as none", async () => {
+  const id = "attempt-reasoning-effort-off-1";
+  const { reqLogger, capture } = await createCaptureHarness(id);
+  await capture({ model: "claude-sonnet-5", thinking: { type: "disabled" } });
+  persistAttemptLogs({ status: 200 }, baseCtx({ pendingRequestId: id, reqLogger }));
+
+  const row = await pollForCallLog(id);
+  assert.ok(row, "call log row should be persisted");
+  assert.equal(row.reasoningEffort, "none");
+});
+
+for (const detailedLoggingEnabled of [false, true]) {
+  test(`retry clears effort (detailed=${detailedLoggingEnabled})`, async () => {
+    const id = `attempt-reasoning-effort-retry-${detailedLoggingEnabled}`;
+    const { reqLogger, capture } = await createCaptureHarness(id, detailedLoggingEnabled);
+    const staleBody = { model: "gpt-5.5", reasoning_effort: "high", messages: [] };
+    await capture(staleBody);
+    await capture({ model: "gpt-5.5", messages: [] });
+    reqLogger.logTargetRequest("https://api.example.com/v1/chat/completions", {}, staleBody);
+    persistAttemptLogs(
+      { status: 502, error: "upstream failed", providerRequest: staleBody },
+      baseCtx({ pendingRequestId: id, detailedLoggingEnabled, reqLogger })
+    );
+
+    const row = await pollForCallLog(id);
+    assert.ok(row);
+    assert.equal(row.reasoningEffort, null);
+  });
+}
+
+test("failure before dispatch persists NULL despite speculative bodies", async () => {
+  const id = "attempt-reasoning-effort-no-dispatch-1";
+  const { reqLogger } = await createCaptureHarness(id, true);
+  const translatedBody = { model: "gpt-5.5", reasoning_effort: "high", messages: [] };
+  reqLogger.logTargetRequest("https://api.example.com/v1/chat/completions", {}, translatedBody);
+  assert.equal(reqLogger.getFinalProviderRequestMetadata?.(), null);
+  persistAttemptLogs(
+    { status: 500, error: "failed before dispatch", providerRequest: translatedBody },
+    baseCtx({ pendingRequestId: id, detailedLoggingEnabled: true, reqLogger })
+  );
+
+  const row = await pollForCallLog(id);
+  assert.ok(row);
+  assert.equal(row.reasoningEffort, null);
+});
+
+test("body mutation and stale logTargetRequest preserve captured effort", async () => {
+  const id = "attempt-reasoning-effort-stale-detail-1";
+  const { reqLogger, capture } = await createCaptureHarness(id, true);
+  const providerBody = { model: "deepseek/deepseek-v4.1-flash", reasoning_effort: "max" };
+  await capture(providerBody);
+  providerBody.reasoning_effort = "xhigh";
+  reqLogger.logTargetRequest("https://api.example.com/v1/chat/completions", {}, providerBody);
+  persistAttemptLogs(
+    { status: 200, providerRequest: providerBody },
+    baseCtx({ pendingRequestId: id, detailedLoggingEnabled: true, reqLogger })
+  );
+
+  const row = await pollForCallLog(id);
+  assert.ok(row);
+  assert.equal(row.reasoningEffort, "max");
+});
+
+test("legacy logger without capture metadata ignores detailed payloads", async () => {
+  const id = "attempt-reasoning-effort-legacy-1";
+  const providerBody = { model: "gpt-5.5", reasoning_effort: "high" };
+  persistAttemptLogs(
+    { status: 200, providerRequest: providerBody },
+    baseCtx({
+      pendingRequestId: id,
+      detailedLoggingEnabled: true,
+      reqLogger: { getPipelinePayloads: () => ({ providerRequest: { body: providerBody } }) },
+    })
+  );
+
+  const row = await pollForCallLog(id);
+  assert.ok(row);
+  assert.equal(row.reasoningEffort, null);
 });

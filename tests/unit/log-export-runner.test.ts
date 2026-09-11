@@ -60,6 +60,11 @@ function installFetchStub(options: { failInsert?: boolean; insertDelayMs?: numbe
       batches.push({ rows: (JSON.parse(body) as { rows: InsertRow[] }).rows });
       return jsonResponse(200, {});
     }
+    if (href.includes("/tables/")) {
+      return jsonResponse(200, {
+        schema: { fields: [{ name: "reasoning_effort", type: "STRING", mode: "NULLABLE" }] },
+      });
+    }
     // Dataset and table both already exist, so prepare() is a no-op.
     return jsonResponse(200, {});
   }) as unknown as typeof fetch;

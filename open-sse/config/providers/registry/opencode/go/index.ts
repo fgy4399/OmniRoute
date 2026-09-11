@@ -250,6 +250,19 @@ export const opencode_goProvider: RegistryEntry = {
       supportedThinkingEfforts: ["none", "low", "high", "max"],
       targetFormat: "openai-responses",
     },
+
+    // Listed by /zen/go/v1/models. models.dev declares low/high/max and vision;
+    // authenticated probes also accepted none with no returned reasoning tokens.
+    {
+      id: "deepseek-v4.1-flash",
+      name: "DeepSeek V4.1 Flash",
+      supportsReasoning: true,
+      supportsVision: true,
+      contextLength: 1000000,
+      maxOutputTokens: 384000,
+      supportedThinkingEfforts: ["none", "low", "high", "max"],
+      targetFormat: "openai-responses",
+    },
     // Console Go free GLM-tier model (live-verified 2026-08-23): the upstream
     // rejects every reasoning_effort outside {low, high, max} whenever tools
     // are present — "[1210] This model always engages in thinking and cannot
@@ -262,6 +275,131 @@ export const opencode_goProvider: RegistryEntry = {
       name: "ox-alpha (free)",
       supportsReasoning: true,
       supportedThinkingEfforts: ["low", "high", "max"],
+    },
+
+    // ── 2026-09-11 catalog sync ────────────────────────────────────────────
+    // Models live on https://opencode.ai/zen/go/v1/models but were previously
+    // undeclared here. Wire formats come from the docs endpoint table
+    // (https://opencode.ai/docs/go); context/output envelopes from models.dev.
+    //
+    // New non-DeepSeek rows expose base ids. Their effort controls use native
+    // request fields; support for translating local effort aliases is separate
+    // from upstream model availability.
+
+    // /responses (@ai-sdk/openai)
+    {
+      id: "grok-4.6",
+      name: "Grok 4.6",
+      contextLength: 500000,
+      maxOutputTokens: 500000,
+      supportsReasoning: true,
+      targetFormat: "openai-responses",
+    },
+    {
+      id: "gpt-5.6-luna",
+      name: "GPT 5.6 Luna",
+      contextLength: 1050000,
+      maxOutputTokens: 128000,
+      supportsReasoning: true,
+      targetFormat: "openai-responses",
+    },
+    {
+      // Same multimodal envelope as muse-spark-1.2-contributor.
+      id: "muse-spark-1.3-contributor",
+      name: "Muse Spark 1.3 Contributor",
+      contextLength: 1048576,
+      maxOutputTokens: 131072,
+      supportsReasoning: true,
+      supportsVision: true,
+      supportsAudio: true,
+      supportsVideo: true,
+      targetFormat: "openai-responses",
+    },
+
+    // /chat/completions (openai-compatible passthrough)
+    {
+      id: "glm-5.3",
+      name: "GLM-5.3",
+      contextLength: 1000000,
+      maxOutputTokens: 131072,
+      supportsReasoning: true,
+    },
+    {
+      id: "glm-5.3-flash",
+      name: "GLM-5.3-Flash",
+      contextLength: 1000000,
+      maxOutputTokens: 131072,
+      supportsReasoning: true,
+    },
+    {
+      id: "hy4-preview",
+      name: "Hy4 Preview",
+      contextLength: 1024000,
+      maxOutputTokens: 64000,
+      supportsReasoning: true,
+    },
+    {
+      id: "longcat-2.0",
+      name: "LongCat-2.0",
+      contextLength: 1000000,
+      maxOutputTokens: 131072,
+    },
+    {
+      id: "mimo-v2-pro",
+      name: "MiMo-V2-Pro",
+      contextLength: 1048576,
+      maxOutputTokens: 128000,
+    },
+    {
+      id: "mimo-v2-omni",
+      name: "MiMo-V2-Omni",
+      contextLength: 262144,
+      maxOutputTokens: 128000,
+    },
+    {
+      // Genuine vision variant of the V4 Flash line — deliberately NOT in
+      // FORCED_VISION_BRIDGE_MODELS (unlike its text-only siblings). Tiers come
+      // from the probe: `none` really does disable thinking here.
+      id: "deepseek-v4-flash-vision-exp",
+      name: "DeepSeek V4 Flash Vision Exp",
+      contextLength: 1000000,
+      maxOutputTokens: 384000,
+      supportsReasoning: true,
+      supportsVision: true,
+      supportedThinkingEfforts: ["none", "low", "high", "max"],
+      targetFormat: "openai-responses",
+    },
+
+    // /messages (@ai-sdk/anthropic → Claude translator)
+    {
+      // #2822 precedent: the Qwen rows stay supportsVision: false so combo
+      // routing keeps image blocks away from a text-only backend.
+      id: "qwen3.8-max",
+      name: "Qwen3.8 Max",
+      targetFormat: "claude",
+      contextLength: 1000000,
+      maxOutputTokens: 131072,
+      supportsVision: false,
+      supportsReasoning: true,
+    },
+    {
+      id: "qwen3.8-flash",
+      name: "Qwen3.8 Flash",
+      targetFormat: "claude",
+      contextLength: 1000000,
+      maxOutputTokens: 131072,
+      supportsVision: false,
+      supportsReasoning: true,
+    },
+
+    // Wire format absent from the endpoint table — keep the provider default
+    // (openai chat/completions).
+    {
+      id: "omen-alpha",
+      name: "Omen Alpha",
+      contextLength: 500000,
+      maxOutputTokens: 128000,
+      supportsReasoning: true,
     },
   ],
 };

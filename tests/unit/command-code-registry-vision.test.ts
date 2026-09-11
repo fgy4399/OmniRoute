@@ -43,6 +43,7 @@ const CC_TEXT_ONLY: [string, string][] = [
   ["GPT-5.3 Codex (CC)", "command-code/gpt-5.3-codex"],
   ["DeepSeek V4 Pro (CC)", "command-code/deepseek/deepseek-v4-pro"],
   ["DeepSeek V4 Flash (CC)", "command-code/deepseek/deepseek-v4-flash"],
+  ["DeepSeek V4.1 Flash (CC)", "command-code/deepseek/deepseek-v4.1-flash"],
   ["GLM-5.1 (CC)", "command-code/zai-org/GLM-5.1"],
   ["GLM-5 (CC)", "command-code/zai-org/GLM-5"],
   ["MiniMax M2.7 (CC)", "command-code/MiniMaxAI/MiniMax-M2.7"],

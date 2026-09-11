@@ -46,6 +46,14 @@ interface OpencodeAccountState extends RotatableAccount {
 
 const EFFORT_LEVELS = ["none", "low", "high", "max"] as const;
 
+/** DeepSeek local effort aliases are rewritten to base ids plus reasoning_effort. */
+const DEEPSEEK_FLAT_EFFORT_MODELS = new Set([
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "deepseek-v4.1-flash",
+  "deepseek-v4-flash-vision-exp",
+]);
+
 /**
  * Models that work WITHOUT any API key on the free/noauth opencode tier.
  *
@@ -72,24 +80,16 @@ const OPENCODE_FREE_MODELS = new Set([
 ]);
 
 /**
- * Models on opencode-go that support effort-tier aliases. Each entry maps the
- * canonical base id to the set of effort suffixes the upstream supports.
- *
- * - DeepSeek V4 Pro and Flash: none/low/high/max
- * - glm-5.2: high/max only (Z.AI maps these through the reasoning plane;
- *   low/medium are not supported on the OpenAI transport)
- * - mimo-v2.5: high/max only (same reasoning; Xiaomi MiMo does not document
- *   low/medium effort tiers)
- * - #8353 OpenCode Go registry effort variants (exact suffix sets from
- *   `opencode models opencode-go --verbose`; MiniMax M3 excluded — different
- *   thinking-mode mapping):
- *   grok-4.5 low/medium/high; hy3 none/low/high; kimi-k3 max;
- *   qwen3.6-plus / qwen3.7-max / qwen3.7-plus high/max;
- *   muse-spark-1.2-contributor minimal/low/medium/high/xhigh (no max)
+ * Local effort suffixes recognized by this executor. DeepSeek aliases use the
+ * flat-field rewrite below. Other families retain their existing behavior;
+ * accepting a base id with native effort fields does not imply that the upstream
+ * accepts an effort suffix as part of a model id.
  */
 const EFFORT_TIERS: Record<string, readonly string[]> = {
   "deepseek-v4-pro": EFFORT_LEVELS,
   "deepseek-v4-flash": EFFORT_LEVELS,
+  "deepseek-v4.1-flash": EFFORT_LEVELS,
+  "deepseek-v4-flash-vision-exp": EFFORT_LEVELS,
   "glm-5.2": ["high", "max"],
   "mimo-v2.5": ["high", "max"],
   "grok-4.5": ["low", "medium", "high"],
@@ -963,9 +963,7 @@ export class OpencodeExecutor extends BaseExecutor {
       const mb = modifiedBody as Record<string, unknown>;
       const parsed = parseEffortLevel(model);
       if (parsed) {
-        const deepseekFamily =
-          parsed.baseModel === "deepseek-v4-pro" || parsed.baseModel === "deepseek-v4-flash";
-        if (deepseekFamily) {
+        if (DEEPSEEK_FLAT_EFFORT_MODELS.has(parsed.baseModel)) {
           // DeepSeek via opencode-go proxies the native DeepSeek contract, which
           // accepts a flat reasoning_effort field (#4647).
           mb.model = parsed.baseModel;

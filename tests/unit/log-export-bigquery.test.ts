@@ -66,6 +66,7 @@ const RECORD: LogExportRecord = {
   errorType: null,
   correlationId: "corr-1",
   sessionTag: "session-1",
+  reasoningEffort: "high",
   modelPinned: true,
   detailState: "artifact",
   hasRequestBody: true,
@@ -91,10 +92,11 @@ interface InsertRow {
 interface RequestBody {
   rows?: InsertRow[];
   skipInvalidRows?: boolean;
+  ignoreUnknownValues?: boolean;
   location?: string;
   timePartitioning?: { type: string; field: string; expirationMs?: string };
   clustering?: { fields: string[] };
-  schema?: { fields: Array<{ name: string }> };
+  schema?: { fields: Array<{ name: string; [key: string]: unknown }> };
 }
 
 interface Call {
@@ -162,6 +164,7 @@ test("toBigQueryRow_EveryDashboardField_HasAColumn", () => {
   assert.equal(row.duration_ms, 1234);
   assert.equal(row.tokens_cache_write, 5);
   assert.equal(row.model_pinned, true);
+  assert.equal(row.reasoning_effort, "high");
   assert.equal(row.exported_at, "2026-08-28T11:00:00.000Z");
 });
 
@@ -255,17 +258,167 @@ test("prepare_MissingDatasetAndTable_CreatesBothWithPartitioning", async () => {
   assert.equal(created[1].body.timePartitioning?.expirationMs, undefined);
 });
 
-test("prepare_ExistingTable_CreatesNothing", async () => {
+for (const autoCreate of [true, false]) {
+  test(`prepare_ExistingCompatibleTable_AutoCreate${autoCreate}_MakesNoWrites`, async () => {
+    const { fetchImpl, calls } = stubFetch([
+      (call) =>
+        call.method === "GET"
+          ? { status: 200, json: { schema: bigquery.BIGQUERY_TABLE_SCHEMA } }
+          : null,
+    ]);
+    const client = bigquery.createBigQueryClientForTest({ ...CONFIG, autoCreate }, fetchImpl);
+
+    await client.prepare();
+    await client.prepare();
+
+    const writes = calls.filter((call) => call.method !== "GET" && !call.url.includes("oauth2"));
+    assert.equal(writes.length, 0);
+  });
+}
+
+test("prepare_MissingReasoningEffort_AppendsOnlyThatColumnAndExportsIdempotently", async () => {
+  const existingFields = [
+    ...bigquery.BIGQUERY_TABLE_SCHEMA.fields
+      .filter((field) => field.name !== "reasoning_effort")
+      .map((field) => ({ ...field, description: `Existing ${field.name} description` })),
+    {
+      name: "custom_metadata",
+      type: "RECORD",
+      mode: "REPEATED",
+      description: "Operator-managed nested column",
+      fields: [
+        {
+          name: "label",
+          type: "STRING",
+          mode: "NULLABLE",
+          policyTags: { names: ["projects/test/locations/eu/taxonomies/1/policyTags/2"] },
+        },
+      ],
+    },
+  ];
+  let schema: NonNullable<RequestBody["schema"]> = { fields: existingFields };
   const { fetchImpl, calls } = stubFetch([
-    (call) => (call.method === "GET" ? { status: 200, json: {} } : null),
+    (call) => {
+      if (call.method === "GET") {
+        return {
+          status: 200,
+          json: {
+            schema,
+            timePartitioning: { type: "MONTH", field: "timestamp", expirationMs: "86400000" },
+            clustering: { fields: ["provider"] },
+          },
+        };
+      }
+      if (call.method === "PATCH") {
+        assert.ok(call.body.schema);
+        schema = call.body.schema;
+        return { status: 200, json: { schema } };
+      }
+      if (call.url.endsWith("/insertAll")) {
+        const columns = new Set(schema.fields.map((field) => field.name));
+        assert.ok(
+          call.body.rows?.every((row) => Object.keys(row.json).every((key) => columns.has(key)))
+        );
+        return { status: 200, json: {} };
+      }
+      return null;
+    },
   ]);
   const client = bigquery.createBigQueryClientForTest(CONFIG, fetchImpl);
 
   await client.prepare();
+  await client.send([RECORD]);
+  await client.prepare();
 
-  const writes = calls.filter((call) => call.method === "POST" && !call.url.includes("oauth2"));
+  const patches = calls.filter((call) => call.method === "PATCH");
+  assert.equal(patches.length, 1, "a later prepare must not add the column again");
+  assert.ok(patches[0].url.endsWith("/tables/call_logs"));
+  assert.deepEqual(patches[0].body, {
+    schema: {
+      fields: [...existingFields, { name: "reasoning_effort", type: "STRING", mode: "NULLABLE" }],
+    },
+  });
+  const insert = calls.find((call) => call.url.endsWith("/insertAll"));
+  assert.ok(insert);
+  assert.ok(calls.indexOf(patches[0]) < calls.indexOf(insert));
+  assert.equal(insert.body.rows?.[0].json.reasoning_effort, "high");
+  assert.equal(insert.body.ignoreUnknownValues, false);
+});
+
+test("prepare_MissingReasoningEffortWithAutoCreateDisabled_RequiresManualAddition", async () => {
+  const { fetchImpl, calls } = stubFetch([
+    (call) =>
+      call.method === "GET"
+        ? {
+            status: 200,
+            json: {
+              schema: {
+                fields: bigquery.BIGQUERY_TABLE_SCHEMA.fields.filter(
+                  (field) => field.name !== "reasoning_effort"
+                ),
+              },
+            },
+          }
+        : null,
+  ]);
+  const client = bigquery.createBigQueryClientForTest({ ...CONFIG, autoCreate: false }, fetchImpl);
+
+  await assert.rejects(async () => {
+    await client.prepare();
+    await client.send([RECORD]);
+  }, /Add nullable STRING column reasoning_effort.*auto-create is off/);
+  const writes = calls.filter((call) => call.method !== "GET" && !call.url.includes("oauth2"));
   assert.equal(writes.length, 0);
 });
+
+for (const status of [403, 500]) {
+  test(`prepare_SchemaPatchFailsWith${status}_StopsBeforeSending`, async () => {
+    const { fetchImpl, calls } = stubFetch([
+      (call) => {
+        if (call.method === "GET") {
+          return {
+            status: 200,
+            json: {
+              schema: {
+                fields: bigquery.BIGQUERY_TABLE_SCHEMA.fields.filter(
+                  (field) => field.name !== "reasoning_effort"
+                ),
+              },
+            },
+          };
+        }
+        if (call.method === "PATCH") {
+          return { status, json: { error: { message: "schema update denied" } } };
+        }
+        return null;
+      },
+    ]);
+    const client = bigquery.createBigQueryClientForTest(CONFIG, fetchImpl);
+
+    await assert.rejects(async () => {
+      await client.prepare();
+      await client.send([RECORD]);
+    }, /schema update denied/);
+    assert.equal(calls.filter((call) => call.method === "PATCH").length, 1);
+    assert.equal(
+      calls.some((call) => call.url.endsWith("/insertAll")),
+      false
+    );
+  });
+}
+
+for (const json of [null, {}, { schema: {} }, { schema: { fields: null } }]) {
+  test(`prepare_UnavailableSchema${JSON.stringify(json)}_RefusesUnsafePatch`, async () => {
+    const { fetchImpl, calls } = stubFetch([
+      (call) => (call.method === "GET" ? { status: 200, json } : null),
+    ]);
+    const client = bigquery.createBigQueryClientForTest(CONFIG, fetchImpl);
+
+    await assert.rejects(() => client.prepare(), /table schema is unavailable/);
+    const writes = calls.filter((call) => call.method !== "GET" && !call.url.includes("oauth2"));
+    assert.equal(writes.length, 0);
+  });
+}
 
 test("prepare_AutoCreateDisabledAndTableMissing_Throws", async () => {
   const { fetchImpl } = stubFetch([]);

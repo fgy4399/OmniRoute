@@ -69,6 +69,7 @@ type ExportSourceRow = {
   correlation_id: string | null;
   model_pinned: number | null;
   session_tag: string | null;
+  reasoning_effort: string | null;
   provider_node_name: string | null;
   provider_node_prefix: string | null;
   resolved_account: string | null;
@@ -118,6 +119,9 @@ function mapExportRow(row: ExportSourceRow): LogExportRecord {
     errorType: row.error_type ?? null,
     correlationId: row.correlation_id || null,
     sessionTag: row.session_tag || null,
+    // The effort tier transmitted upstream (migration 176) — exported so a warehouse
+    // query can correlate reasoning steering with latency/cost. Null when none was sent.
+    reasoningEffort: row.reasoning_effort || null,
     modelPinned: toNumberOrNull(row.model_pinned) === 1,
     detailState: row.detail_state,
     hasRequestBody: toNumberOrNull(row.has_request_body) === 1,

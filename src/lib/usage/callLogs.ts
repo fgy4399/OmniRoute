@@ -120,6 +120,7 @@ type CallLogSummaryRow = {
   correlation_id?: string | null;
   model_pinned?: number | null;
   session_tag?: string | null;
+  reasoning_effort?: string | null;
 };
 
 const RESOLVED_ACCOUNT_SQL = "COALESCE(NULLIF(pc.name, ''), NULLIF(pc.email, ''), cl.account)";
@@ -418,6 +419,10 @@ function mapSummaryRow(row: CallLogSummaryRow) {
     correlationId: row.correlation_id || null,
     modelPinned: toNumber(row.model_pinned) === 1,
     sessionTag: row.session_tag || null,
+    // The reasoning-effort tier actually transmitted upstream (null when the
+    // request carried none). Distinct from `tokens.reasoning`, which counts the
+    // reasoning OUTPUT. See migration 176.
+    reasoningEffort: row.reasoning_effort || null,
   };
 }
 
@@ -542,6 +547,14 @@ async function saveCallLogOperation(entry: any): Promise<void> {
       correlationId: entry.correlationId || null,
       modelPinned: entry.modelPinned ? 1 : 0,
       sessionTag: entry.sessionTag || null,
+      // The effort tier the provider request actually carried, extracted by the
+      // chat attempt sink from the final serialized upstream body
+      // (open-sse/utils/effectiveReasoningEffort.ts). Null when no tier was sent —
+      // e.g. non-chat callers, or budget-only thinking targets. Migration 176.
+      reasoningEffort:
+        typeof entry.reasoningEffort === "string" && entry.reasoningEffort.length > 0
+          ? entry.reasoningEffort.slice(0, 32)
+          : null,
       // OpenAI Responses API response id, when this attempt produced one --
       // indexed so a later request's `previous_response_id` can resolve
       // this row's artifact for OmniRoute-native continuation. See
@@ -601,7 +614,7 @@ async function saveCallLogOperation(entry: any): Promise<void> {
         artifact_relpath, artifact_size_bytes, artifact_sha256,
         has_request_body, has_response_body, has_pipeline_details, request_summary,
         correlation_id, model_pinned, session_tag, response_id, error_type,
-        video_content_removed
+        video_content_removed, reasoning_effort
       )
       VALUES (
         @id, @timestamp, @method, @path, @status, @model, @requestedModel, @provider,
@@ -613,7 +626,7 @@ async function saveCallLogOperation(entry: any): Promise<void> {
         @artifactRelPath, @artifactSizeBytes, @artifactSha256,
         @hasRequestBody, @hasResponseBody, @hasPipelineDetails, @requestSummary,
         @correlationId, @modelPinned, @sessionTag, @responseId, @errorType,
-        @videoContentRemoved
+        @videoContentRemoved, @reasoningEffort
       )
     `
     ).run({

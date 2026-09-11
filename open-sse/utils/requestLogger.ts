@@ -1,6 +1,7 @@
 import { getPendingById } from "@/lib/usage/usageHistory";
 import { getChatLogMaxDepth, getChatLogArrayTailItems } from "@/lib/logEnv";
 import { sanitizeErrorMessage } from "./error.ts";
+import { readEffectiveReasoningEffort } from "./effectiveReasoningEffort.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -38,6 +39,8 @@ type RequestLogger = {
   logRouteDecision: (decision: unknown) => void;
   logOpenAIRequest: (body: unknown) => void;
   logTargetRequest: (url: unknown, headers: HeaderInput, body: unknown) => void;
+  recordFinalProviderRequest?: (body: unknown) => void;
+  getFinalProviderRequestMetadata?: () => { reasoningEffort: string | null } | null;
   logProviderResponse: (
     status: unknown,
     statusText: unknown,
@@ -380,10 +383,22 @@ export async function createRequestLogger(
   // the /api/logs/active endpoint.
   const chunkMethods = makeStreamChunkMethods(options, captureStreamChunks);
 
+  // Keep only metadata from actual dispatch captures, even with detailed logging disabled.
+  let finalProviderRequestMetadata: { reasoningEffort: string | null } | null = null;
+  const finalProviderRequestMethods = {
+    recordFinalProviderRequest(body: unknown) {
+      finalProviderRequestMetadata = { reasoningEffort: readEffectiveReasoningEffort(body) };
+    },
+    getFinalProviderRequestMetadata() {
+      return finalProviderRequestMetadata;
+    },
+  };
+
   if (options.enabled === false) {
     let routeDecision: JsonRecord | null = null;
     return {
       sessionPath: null,
+      ...finalProviderRequestMethods,
       logClientRawRequest() {},
       logRouteDecision(decision) {
         routeDecision = cloneBoundedForLog(decision) as JsonRecord;
@@ -409,6 +424,7 @@ export async function createRequestLogger(
 
   return {
     sessionPath: null,
+    ...finalProviderRequestMethods,
 
     logClientRawRequest(endpoint, body, headers = {}, effectiveInput) {
       payloads.clientRawRequest = {

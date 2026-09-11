@@ -110,6 +110,18 @@ export const command_codeProvider: RegistryEntry = {
       contextLength: 1000000,
       maxOutputTokens: 131072,
     },
+
+    // The public Command Code catalog lists this id with a 1M context.
+    // Efforts and the output cap follow this gateway's existing V4 entries;
+    // discovery does not advertise model-specific effort or vision metadata.
+    {
+      id: "deepseek/deepseek-v4.1-flash",
+      name: "DeepSeek V4.1 Flash (CC)",
+      supportsReasoning: true,
+      supportedThinkingEfforts: COMMAND_CODE_REASONING_EFFORTS,
+      contextLength: 1000000,
+      maxOutputTokens: 131072,
+    },
     {
       id: "moonshotai/Kimi-K2.6",
       name: "Kimi K2.6 (CC)",

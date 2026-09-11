@@ -54,6 +54,8 @@ export interface LogExportRecord {
   errorType: string | null;
   correlationId: string | null;
   sessionTag: string | null;
+  /** The reasoning-effort tier actually sent upstream (null when none was sent). */
+  reasoningEffort: string | null;
   modelPinned: boolean;
   detailState: string | null;
   hasRequestBody: boolean;

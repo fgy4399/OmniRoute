@@ -721,6 +721,19 @@ export default function RequestLoggerDetail({
               </div>
               <div>
                 <div className="text-[10px] text-text-muted uppercase tracking-wider mb-1">
+                  {t("reasoningEffort")}
+                </div>
+                {/* The tier OmniRoute actually sent upstream (call_logs.reasoning_effort,
+                    migration 176) — shown next to the requested model so a sanitizer
+                    rewrite (xhigh → max, clamps, …) is visible per call. Em dash when
+                    the request carried no tier at all. */}
+                <div className="text-sm font-medium font-mono text-text-muted">
+                  {(detail?.reasoningEffort || log.reasoningEffort || "").toString().trim() ||
+                    "\u2014"}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] text-text-muted uppercase tracking-wider mb-1">
                   {t("provider")}
                 </div>
                 <span

@@ -726,6 +726,16 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     supportsTools: true,
   },
 
+  // DeepSeek V4.1 Flash — Go-tier successor to V4 Flash. Same 1M context /
+  // 384K output envelope as the rest of the V4 line (models.dev opencode-go).
+  "deepseek-v4.1-flash": {
+    maxOutputTokens: 384000,
+    contextWindow: 1000000,
+    thinkingBudgetCap: 380000,
+    supportsThinking: true,
+    supportsTools: true,
+  },
+
   // ── Tencent Hunyuan 3 Preview ────────────────────────────────────
   "hy3-preview": {
     maxOutputTokens: 262144,
